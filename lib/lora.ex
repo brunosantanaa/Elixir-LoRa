@@ -1,11 +1,20 @@
 defmodule LoRa do
-
   use Bitwise
   use GenServer
 
-  alias ELixirALE.GPIO
+  alias ElixirALE.GPIO
   alias ElixirALE.SPI
 
+  require Logger
+
+  # SPI
+  @lora_default_spi "spidev0.0"
+  @lora_default_spi_frequency 8_000_000
+  @lora_default_ss_pin 24
+  @lora_default_reset_pin 25
+  @lora_default_dio0_pin 22
+
+  #REG
   @reg_fifo 0x00
   @reg_op_mode 0x01
   @reg_frf_msb 0x06
@@ -60,185 +69,270 @@ defmodule LoRa do
   @max_pkt_length 255
   @pa_output_rfo_pin 0
 
-  def start_link(config) do
-    GenServer.start_link(__MODULE__, config, name: __MODULE__)
-  end
+  # End packet
+  @verify_end_packet_cycles 10_000
 
-  def begin(frequency), do: GenServer.cast(__MODULE__, {:begin, frequency})
-
+  def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config, name: __MODULE__)
+  def begin(frequency), do: GenServer.call(__MODULE__, {:begin, frequency})
+  def end_lora(), do: GenServer.cast(__MODULE__, :end_lora)
   def set_spreading_factor(sf \\ 6) when sf >= 6 and sf <= 12,
     do: GenServer.cast(__MODULE__, {:set_sf, sf})
 
   def set_signal_band_width(sbw), do: GenServer.cast(__MODULE__, {:set_sbw, sbw})
-
   def begin_packet(implicit_header \\ false),
     do: GenServer.cast(__MODULE__, {:begin_packet, implicit_header})
 
-  def end_packet(async \\ false), do: GenServer.cast(__MODULE__, {:end_packet, async})
-
+  def end_packet(), do: GenServer.cast(__MODULE__, :end_packet)
   def print(text), do: GenServer.cast(__MODULE__, {:print, text})
+  def enable_crc(), do: GenServer.cast(__MODULE__, :enable_crc)
+  # deprecated
+  def crc(), do: enable_crc()
+  def disable_crc(), do: GenServer.cast(__MODULE__, :disable_crc)
+  # deprecated
+  def no_crc(), do: disable_crc()
 
   def init(config) do
-    # {:ok, ss} = GPIO.start_link(8, :output)
-    # GPIO.write(ss, 1)
-    {:ok, reset} = GPIO.start_link(config.reset, :output)
-    GPIO.write(reset, 1)
-    :timer.sleep(10)
-    GPIO.write(reset, 0)
-    :timer.sleep(10)
-    {:ok, spi} = SPI.start_link("spidev0.0", speed_hz: 8_000_000)
+
+    pin_ss = Keyword.get(config, :ss, @lora_default_ss_pin)
+    pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
+    device = Keyword.get(config, :spi, @lora_default_spi)
+    speed_hz = Keyword.get(config, :spi_speed, @lora_default_spi_frequency)
+    
+    {:ok, ss} = GPIO.start_link(pin_ss, :output)
+    {:ok, rst} = GPIO.start_link(pin_reset, :output)
+
+    GPIO.write(ss, 1)
+    GPIO.write(rst, 1)
+    :timer.sleep(100)
+    GPIO.write(rst, 0)
+    :timer.sleep(100)
+
+    {:ok, spi} = SPI.start_link(device, speed_hz: speed_hz, mode: 0)
 
     {:ok,
      %{
-       spi: spi,
-       rst: reset,
+       spi: %{pid: spi, ss: ss},
+       rst: rst,
        config: %{frequency: 0, impl_header: false, packet_index: 0, on_receive: nil}
      }}
   end
 
-  def handle_cast({:begin, frequency}, state) do
-    sleep(state.spi)
-    set_frequency(frequency, state)
+  def handle_info({:DOWN, _ref, :process, _from, type}, state) do
+    Logger.error("send packet - Exit with #{type}")
+    {:noreply, state}
+  end
 
-    write_register(state.spi, @reg_fifo_tx_base_addr, 0)
-    write_register(state.spi, @reg_fifo_rx_base_addr, 0)
+  def handle_call({:begin, frequency}, _from, state) do
 
-    {:ok, read} = read_register(state.spi, @reg_lna)
+    if read_register(state[:spi], @reg_version) == 0x12 do
+      # Sleep mode
+      sleep(state[:spi])
+      # Set frequency
+      set_frequency(state[:spi], frequency)
+      # Set base addresses
+      write_register(state[:spi], @reg_fifo_tx_base_addr, 0)
+      write_register(state[:spi], @reg_fifo_rx_base_addr, 0)
+      # Set LNA boost
+      write_register(state[:spi], @reg_lna, read_register(state[:spi], @reg_lna) ||| 0x03)
+      # Set auto AGC
+      write_register(state[:spi], @reg_modem_config_3, 0x04)
+      # Set output power to 17 dBm
+      set_tx_power(state[:spi], 17)
+      # put in standby mode
+      idle(state[:spi])
 
-    write_register(state.spi, @reg_lna, read ||| 0x03)
+      {:reply, :ok, %{state | :config => %{state[:config] | :frequency => frequency}}}
+    else
+      {:reply, {:error, :version}, state}
+    end
+  end
 
-    write_register(state.spi, @reg_modem_config_3, 0x04)
+  def handle_cast(:end_lora, state) do
+    # Put in sleep mode
+    sleep(state[:spi])
+    
+  end
 
-    set_tx_power(state.spi, 17)
+  def handle_cast({:begin_packet, implicit_header}, state) do
+    # Put in standby mode
+    idle(state[:spi])
 
-    idle()
+    if implicit_header do
+      GenServer.cast(__MODULE__, :impl_header_mode)
+    else
+      GenServer.cast(__MODULE__, :expl_header_mode)
+    end
 
-    {:noreply, %{state | :config => %{state[:config] | :frequency => frequency}}}
+    # Reset FIFO address and payload length
+    write_register(state[:spi], @reg_fifo_addr_ptr, 0)
+    write_register(state[:spi], @reg_payload_length, 0)
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:end_packet, state) do
+    # Put in TX mode
+    write_register(state[:spi], @reg_op_mode, @mode_long_range_mode ||| @mode_tx)
+
+    pid = spawn_link(__MODULE__, :verify_end_packet, [state[:spi]])
+    ref = Process.monitor(pid)
+    owner = self()
+    Task.yield(%Task{pid: pid, ref: ref, owner: owner}, 2000)
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:enable_crc, state) do
+    write_register(
+      state[:spi],
+      @reg_modem_config_2,
+      read_register(state[:spi], @reg_modem_config_2) ||| 0x04
+    )
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:disable_crc, state) do
+    write_register(
+      state[:spi],
+      @reg_modem_config_2,
+      read_register(state[:spi], @reg_modem_config_2) ||| 0xFB
+    )
+
+    {:noreply, state}
   end
 
   def handle_cast({:set_sf, sf}, state) do
     if sf == 6 do
-      write_register(state.spi, @reg_detection_optimize, 0xC5)
-      write_register(state.spi, @reg_detection_threshold, 0x0C)
+      write_register(state[:spi], @reg_detection_optimize, 0xC5)
+      write_register(state[:spi], @reg_detection_threshold, 0x0C)
     else
-      write_register(state.spi, @reg_detection_optimize, 0xC3)
-      write_register(state.spi, @reg_detection_threshold, 0x0A)
+      write_register(state[:spi], @reg_detection_optimize, 0xC3)
+      write_register(state[:spi], @reg_detection_threshold, 0x0A)
     end
 
-    {:ok, read} = read_register(state.spi, @reg_modem_config_2)
-    write_register(state.spi, @reg_modem_config_2, (read &&& 0x0F) ||| (sf <<< 4 &&& 0xF0))
-    set_ldo_flag(state.spi)
+    config2 = read_register(state[:spi], @reg_modem_config_2)
+    Logger.debug("SET-SF -> REG_MODEM_CONFIG_2: #{config2}")
+    sf_ = (config2 &&& 0x0F) ||| (sf <<< 4 &&& 0xF0)
+    write_register(state[:spi], @reg_modem_config_2, sf_)
+    Logger.debug("SET-SF -> set -> REG_MODEM_CONFIG_2: #{sf_}")
+    set_ldo_flag(state[:spi])
+
     {:noreply, state}
   end
 
   def handle_cast({:set_sbw, sbw}, state) do
-    {:ok, reg} = read_register(state.spi, @reg_modem_config_1)
+    reg = read_register(state[:spi], @reg_modem_config_1)
+    Logger.debug("SET-SF -> REG_MODEM_CONFIG_1: #{reg}")
 
     cond do
-      sbw <= 7.8e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 0 <<< 4)
-      sbw <= 10.4e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 1 <<< 4)
-      sbw <= 15.6e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 2 <<< 4)
-      sbw <= 20.8e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 3 <<< 4)
-      sbw <= 31.25e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 4 <<< 4)
-      sbw <= 41.7e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 5 <<< 4)
-      sbw <= 62.5e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 6 <<< 4)
-      sbw <= 125.0e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 7 <<< 4)
-      sbw <= 250.0e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 8 <<< 4)
-      sbw > 250.0e3 -> write_register(state.spi, @reg_modem_config_1, (reg &&& 0x0F) ||| 9 <<< 4)
+      sbw <= 7.8e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 0 <<< 4)
+
+      sbw <= 10.4e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 1 <<< 4)
+
+      sbw <= 15.6e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 2 <<< 4)
+
+      sbw <= 20.8e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 3 <<< 4)
+
+      sbw <= 31.25e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 4 <<< 4)
+
+      sbw <= 41.7e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 5 <<< 4)
+
+      sbw <= 62.5e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 6 <<< 4)
+
+      sbw <= 125.0e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 7 <<< 4)
+
+      sbw <= 250.0e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 8 <<< 4)
+
+      sbw > 250.0e3 ->
+        write_register(state[:spi], @reg_modem_config_1, (reg &&& 0x0F) ||| 9 <<< 4)
     end
 
-    set_ldo_flag(state.spi)
-  end
-
-  def handle_cast({:begin_packet, implicit_header}, state) do
-    if transmitting?(state.spi) do
-      {:noreply, state}
-    else
-      idle(state.spi)
-
-      if implicit_header do
-        GenServer.cast(__MODULE__, :impl_header_mode)
-      else
-        GenServer.cast(__MODULE__, :expl_header_mode)
-      end
-
-      write_register(state.spi, @reg_fifo_addr_ptr, 0)
-      write_register(state.spi, @reg_payload_length, 0)
-
-      {:noreply, state}
-    end
-  end
-
-  def handle_cast({:end_packet, async}, state) do
-    write_register(state.spi, @reg_op_mode, @mode_long_range_mode ||| @mode_tx)
-
-    if async do
-      :timer.sleep(1)
-    else
-      pid = spawn_link(__MODULE__, :verify_end_packet, [state.spi])
-      ref = Process.monitor(pid)
-      owner = self()
-      Task.yield(%Task{pid: pid, ref: ref, owner: owner})
-
-      write_register(state.spi, @reg_irq_flags, @irq_tx_done_mask)
-    end
+    set_ldo_flag(state[:spi])
+    {:noreply, state}
   end
 
   def handle_cast(:impl_header_mode, state) do
-    {:ok, read} = read_register(state.spi, @reg_modem_config_1)
-    write_register(state.spi, @reg_modem_config_1, read ||| 0x01)
+    write_register(
+      state[:spi],
+      @reg_modem_config_1,
+      read_register(state[:spi], @reg_modem_config_1) ||| 0x01
+    )
+
     {:noreply, %{state | :config => %{state[:config] | :impl_header => true}}}
   end
 
   def handle_cast(:expl_header_mode, state) do
-    {:ok, read} = read_register(state.spi, @reg_modem_config_1)
-    write_register(state.spi, @reg_modem_config_1, read ||| 0xFE)
+    write_register(
+      state[:spi],
+      @reg_modem_config_1,
+      read_register(state[:spi], @reg_modem_config_1) ||| 0xFE
+    )
+
     {:noreply, %{state | :config => %{state[:config] | :impl_header => false}}}
   end
 
   def handle_cast({:print, text}, state) do
-    {:ok, current_Length} = read_register(state.spi, @reg_payload_length)
+    current_length = read_register(state[:spi], @reg_payload_length)
     bytelist = text |> String.to_charlist()
 
-    if current_Length + length(bytelist) < @max_pkt_length do
-      Enum.map(bytelist, fn x -> write_register(state.spi, @reg_fifo, x) end)
-      write_register(state.spi, @reg_payload_length, current_Length + length(bytelist))
+    if current_length + length(bytelist) < @max_pkt_length,
+      do: write(state[:spi], bytelist, length(bytelist)),
+      else: write(state[:spi], bytelist, @max_pkt_length - current_length)
+
+    {:noreply, state}
+  end
+
+  defp write(spi, bytelist, size) do
+    for i <- 0..(size - 1) do
+      write_register(spi, @reg_fifo, Enum.at(bytelist, i))
+    end
+
+    write_register(spi, @reg_payload_length, size)
+  end
+
+  def verify_end_packet(spi, counter \\ 0) do
+    if (read_register(spi, @reg_irq_flags) &&& @irq_tx_done_mask) == 0 do
+      if counter <= @verify_end_packet_cycles,
+        do: verify_end_packet(spi, counter + 1),
+        else: Logger.error("Timeout")
     else
-      size = @max_pkt_length - current_Length
-      for n <- 0..size, do: write_register(state.spi, @reg_fifo, Enum.at(bytelist, n))
-      write_register(state.spi, @reg_payload_length, current_Length + size)
+      write_register(spi, @reg_irq_flags, @irq_tx_done_mask)
+      Logger.debug("Verify-end-Packet -> IRQ-FLAGS: #{read_register(spi, @reg_irq_flags)}")
     end
   end
 
   defp transmitting?(spi) do
-    {:ok, op_mode} = read_register(spi, @reg_op_mode)
-    {:ok, irq_flags} = read_register(spi, @reg_irq_flags)
+    irq_flags = read_register(spi, @reg_irq_flags)
 
-    unless (irq_flags &&& @irq_tx_done_mask) == 0 do
-      write_register(spi, @reg_irq_flags, @irq_tx_done_mask)
-      false
-    else
-      false
-    end
+    unless (irq_flags &&& @irq_tx_done_mask) == 0,
+      do: write_register(spi, @reg_irq_flags, @irq_tx_done_mask)
 
-    if (op_mode &&& @mode_tx) == @mode_tx, do: true, else: false
+    if (read_register(spi, @reg_op_mode) &&& @mode_tx) == @mode_tx, do: true, else: false
   end
 
   defp sleep(spi) do
-    SPI.transfer(spi, <<@reg_op_mode ||| @mode_sleep>>)
+    write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_sleep)
   end
 
-  defp verify_end_packet(spi) do
-    {:ok, read} = read_register(spi, @reg_irq_flags)
-    unless (read &&& @irq_tx_done_mask) == 0, do: verify_end_packet(spi)
+  defp idle(spi) do
+    write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_stdby)
   end
 
-  defp set_frequency(freq, state) do
-    frt = (trunc(freq) <<< 19) / 32_000_000
-
-    write_register(state.spi, @reg_frf_msb, frt >>> 16)
-    write_register(state.spi, @reg_frf_mid, frt >>> 8)
-    write_register(state.spi, @reg_frf_lsb, frt >>> 0)
+  defp set_frequency(spi, freq) do
+    frt = trunc((trunc(freq) <<< 19) / 32_000_000)
+    write_register(spi, @reg_frf_msb, frt >>> 16)
+    write_register(spi, @reg_frf_mid, frt >>> 8)
+    write_register(spi, @reg_frf_lsb, frt >>> 0)
   end
 
   defp read_register(spi, address) do
@@ -246,26 +340,25 @@ defmodule LoRa do
   end
 
   defp write_register(spi, address, value) do
-    single_transfer(address ||| 0x80, value)
+    single_transfer(spi, address ||| 0x80, value)
   end
 
   defp single_transfer(spi, address, value) do
-    # GPIO.write(ss, 0)
-    SPI.transfer(pid, <<address>>)
-    resp = SPI.transfer(pid, <<value>>)
-    # GPIO.write(ss, 1)
-    {:ok, resp}
+    GPIO.write(spi.ss, 0)
+    <<_, resp>> = SPI.transfer(spi.pid, <<address, value>>)
+    GPIO.write(spi.ss, 1)
+    resp
   end
 
   defp set_tx_power(spi, level, output_pin) when output_pin == @pa_output_rfo_pin do
     cond do
       level < 0 -> write_register(spi, @reg_pa_config, 0x70 ||| 0)
       level > 14 -> write_register(spi, @reg_pa_config, 0x70 ||| 14)
-      level -> write_register(spi, @reg_pa_config, 0x70 ||| level)
+      level >= 0 -> write_register(spi, @reg_pa_config, 0x70 ||| level)
     end
   end
 
-  defp set_tx_power(spi, level, output_pin \\ 1) do
+  defp set_tx_power(spi, level) do
     if level > 17 do
       write_register(spi, @reg_pa_dac, 0x87)
       set_ocp(spi, 140)
@@ -281,6 +374,8 @@ defmodule LoRa do
         do: write_register(spi, @reg_pa_config, @pa_boost ||| 0),
         else: write_register(spi, @reg_pa_config, @pa_boost ||| level - 2)
     end
+
+    Logger.debug("SET-TX -> REG-OCP: #{read_register(spi, @reg_ocp)}")
   end
 
   defp set_ocp(spi, ocp) do
@@ -296,23 +391,22 @@ defmodule LoRa do
     end
   end
 
-  defp idle(spi) do
-    write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_stdby)
-  end
-
   defp set_ldo_flag(spi) do
-    {:ok, spf} = get_spreading_factor(spi)
-    symbol_duration = 1000 / (get_signal_band_width() / (1 <<< spf))
+    spf = get_spreading_factor(spi)
+    Logger.debug("SET-LDO-FLAG -> SPREADING_FACOTR: #{spf}")
 
+    symbol_duration = 1000 / (get_signal_band_width(spi) / (1 <<< spf))
     ldo_on = if symbol_duration > 16, do: 1, else: 0
 
-    {:ok, config3} = read_register(spi, @reg_modem_config_3)
-
-    write_register(spi, @reg_modem_config_3, change_third_bit(config3, ldo_on))
+    write_register(
+      spi,
+      @reg_modem_config_3,
+      bit_write(read_register(spi, @reg_modem_config_3), 3, ldo_on)
+    )
   end
 
   defp get_signal_band_width(spi) do
-    {:ok, bw} = read_register(spi, @reg_modem_config_1) >>> 4
+    bw = read_register(spi, @reg_modem_config_1) >>> 4
 
     case bw do
       0 -> 7.8e3
@@ -329,10 +423,10 @@ defmodule LoRa do
   end
 
   defp get_spreading_factor(spi) do
-    read_register(spi, @reg_modem_config_2 >>> 4)
+    config = read_register(spi, @reg_modem_config_2)
+    Logger.debug("GET-SF -> REG_MODEM_CONFIG_2: #{config}")
+    config >>> 4
   end
-
-  defp change_third_bit(value, bit), do: if(bit == 0, do: value &&& 0xF7, else: value ||| 8)
 
   defp uint8(val) do
     cond do
@@ -353,11 +447,40 @@ defmodule LoRa do
     end
   end
 
+  # defp change_third_bit(value, bit), do: if(bit == 0, do: value &&& 0xF7, else: value ||| 8)
+
+  def bit_write(value, bit, subs) do
+    {ini, fim} = list_bits(value) |> add_zeros(bit) |> Enum.split(bit)
+    [_h | t] = fim
+    Enum.reverse(ini ++ [subs] ++ t) |> listbits_to_integer()
+  end
+
+  defp add_zeros(list, bit, state \\ [], i \\ 0) do
+    if length(list) <= bit and length(state) <= bit do
+      if i <= length(list) - 1 do
+        add_zeros(list, bit, state ++ [Enum.at(list, i)], i + 1)
+      else
+        add_zeros(list, bit, state ++ [0], i + 1)
+      end
+    else
+      if bit <= length(list) - 1, do: list, else: state
+    end
+  end
+
+  defp listbits_to_integer(list, state \\ 0, pot \\ 0) do
+    if pot < length(list) do
+      val = list |> Enum.reverse() |> Enum.at(pot)
+      listbits_to_integer(list, state + :math.pow(2, pot) * val, pot + 1)
+    else
+      trunc(state)
+    end
+  end
+
   defp list_bits(value, state \\ []) do
     unless div(value, 2) == 0 do
-      conv(div(value, 2), state ++ [rem(value, 2)])
+      list_bits(div(value, 2), state ++ [rem(value, 2)])
     else
-      Enum.reverse(state ++ [rem(value, 2)])
+      state ++ [rem(value, 2)]
     end
   end
 end
