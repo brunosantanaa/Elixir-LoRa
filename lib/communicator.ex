@@ -1,19 +1,27 @@
 defmodule LoRa.Communicator do
-
   use Bitwise
+
   alias ElixirALE.GPIO
   alias ElixirALE.SPI
 
-  @reg_fifo 0x00
-  @reg_payload_length 0x22
+  alias LoRa.Parameters
+
+  def print(text, spi) do
+    current_length = read_register(spi, Parameters.register().payload_length)
+    bytelist = text |> String.to_charlist()
+
+    if current_length + length(bytelist) < Parameters.max().pkt_length,
+      do: write(spi, bytelist, length(bytelist)),
+      else: write(spi, bytelist, Parameters.max().pkt_length - current_length)
+  end
 
   def write(spi, bytelist, size) do
     for i <- 0..(size - 1) do
       :timer.sleep(1)
-      write_register(spi, @reg_fifo, Enum.at(bytelist, i))
+      write_register(spi, Parameters.register().fifo, Enum.at(bytelist, i))
     end
 
-    write_register(spi, @reg_payload_length, size)
+    write_register(spi, Parameters.register().payload_length, size)
   end
 
   def read_register(spi, address) do
@@ -30,5 +38,4 @@ defmodule LoRa.Communicator do
     GPIO.write(spi.ss, 1)
     resp
   end
-
 end

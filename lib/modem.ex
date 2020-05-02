@@ -1,98 +1,70 @@
 defmodule LoRa.Modem do
   use Bitwise
+  require Logger
 
   alias ElixirALE.GPIO
-  alias ElixirALE.SPI
 
   alias LoRa.Communicator
-
-  # REG
-  #@reg_fifo 0x00
-  @reg_op_mode 0x01
-  @reg_frf_msb 0x06
-  @reg_frf_mid 0x07
-  @reg_frf_lsb 0x08
-  @reg_pa_config 0x09
-  @reg_ocp 0x0B
-  @reg_lna 0x0C
-  @reg_fifo_addr_ptr 0x0D
-  @reg_fifo_tx_base_addr 0x0E
-  @reg_fifo_rx_base_addr 0x0F
-  # @reg_fifo_rx_current_addr 0x10
-  @reg_irq_flags 0x12
-  # @reg_rx_nb_bytes 0x13
-  # @reg_pkt_snr_value 0x19
-  # @reg_pkt_rssi_value 0x1A
-  @reg_modem_config_1 0x1D
-  @reg_modem_config_2 0x1E
-  # @reg_preamble_msb 0x20
-  # @reg_preamble_lsb 0x21
-  @reg_payload_length 0x22
-  @reg_modem_config_3 0x26
-  # @reg_freq_error_msb 0x28
-  # @reg_freq_error_mid 0x29
-  # @reg_freq_error_lsb 0x2A
-  # @reg_rssi_wideband 0x2C
-  @reg_detection_optimize 0x31
-  # @reg_invertiq 0x33
-  @reg_detection_threshold 0x37
-  # @reg_sync_word 0x39
-  # @reg_invertiq2 0x3B
-  # @reg_dio_mapping_1 0x40
-  @reg_version 0x42
-  @reg_pa_dac 0x4D
-
-  # modes
-  @mode_long_range_mode 0x80
-  @mode_sleep 0x00
-  @mode_stdby 0x01
-  @mode_tx 0x03
-  # @mode_rx_continuous 0x05
-  # @mode_rx_single 0x06
-
-  # pa config
-  @pa_boost 0x80
-
-  # irq masks
-  @irq_tx_done_mask 0x08
-
-  # @irq_payload_crc_error_mask 0x20
-  # @irq_rx_done_mask 0x40
-
-  @max_pkt_length 255
-  # @pa_output_rfo_pin 0
-
-  # End packet
-  @verify_end_packet_cycles 10_000
-
-  @bw_freqs %{
-    0 => 7.8e3,
-    1 => 10.4e3,
-    2 => 15.6e3,
-    3 => 20.8e3,
-    4 => 31.25e3,
-    5 => 41.7e3,
-    6 => 62.5e3,
-    7 => 125.0e3,
-    8 => 250.0e3,
-    9 => 250.0e3
-  }
+  alias LoRa.Parameters
 
   # def transmitting?(spi) do
-  #   irq_flags = Communicator.read_register(spi, @reg_irq_flags)
+  #   irq_flags = Communicator.read_register(spi, Parameters.register.irq_flags)
 
-  #   unless (irq_flags &&& @irq_tx_done_mask) == 0,
-  #     do: Communicator.write_register(spi, @reg_irq_flags, @irq_tx_done_mask)
+  #   unless (irq_flags &&& Parameters.irq.tx_done_mask) == 0,
+  #     do: Communicator.write_register(spi, Parameters.register.irq_flags, Parameters.irq.tx_done_mask)
 
-  #   if (Communicator.read_register(spi, @reg_op_mode) &&& @mode_tx) == @mode_tx, do: true, else: false
+  #   if (Communicator.read_register(spi, Parameters.register.op_mode) &&& Parameters.mode.tx) == Parameters.mode.tx, do: true, else: false
   # end
 
+  def begin_packet(spi, header? \\ false) do
+    idle(spi)
+    set_header_mode(spi, header?)
+  end
+
+  def end_packet(spi, from, async? \\ false) do
+    Communicator.write_register(
+      spi,
+      Parameters.register().op_mode,
+      Parameters.mode().long_range_mode ||| Parameters.mode().tx
+    )
+
+    unless async?, do: verify_end_packet(spi, from)
+  end
+
+  def verify_end_packet(spi, from, counter \\ 0) do
+    
+    if (Communicator.read_register(spi, Parameters.register().irq_flags) &&& Parameters.irq().tx_done_mask) == 0 do
+      :timer.sleep(1)
+
+      if counter <= Parameters.max().end_packet_cycles,
+        do: verify_end_packet(spi, from, counter + 1),
+        else: send(from, :send_timeout)
+    else
+      # Reset flags
+      Communicator.write_register(
+        spi,
+        Parameters.register().irq_flags,
+        Parameters.irq().tx_done_mask
+      )
+
+      send(from, :send_ok)
+    end
+  end
+
   def sleep(spi) do
-    Communicator.write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_sleep)
+    Communicator.write_register(
+      spi,
+      Parameters.register().op_mode,
+      Parameters.mode().long_range_mode ||| Parameters.mode().sleep
+    )
   end
 
   def idle(spi) do
-    Communicator.write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_stdby)
+    Communicator.write_register(
+      spi,
+      Parameters.register().op_mode,
+      Parameters.mode().long_range_mode ||| Parameters.mode().stdby
+    )
   end
 
   def reset(rst) do
@@ -104,55 +76,83 @@ defmodule LoRa.Modem do
     :timer.sleep(10)
   end
 
-  def reset_fifo_payload(state) do
+  def reset_fifo_payload(spi) do
     # Reset FIFO address and payload length
-    Communicator.write_register(state[:spi], @reg_fifo_addr_ptr, 0)
-    Communicator.write_register(state[:spi], @reg_payload_length, 0)
+    Communicator.write_register(spi, Parameters.register().fifo_addr_ptr, 0)
+    Communicator.write_register(spi, Parameters.register().payload_length, 0)
   end
 
   def set_frequency(spi, freq) do
     frt = trunc((trunc(freq) <<< 19) / 32_000_000)
-    Communicator.write_register(spi, @reg_frf_msb, frt >>> 16)
-    Communicator.write_register(spi, @reg_frf_mid, frt >>> 8)
-    Communicator.write_register(spi, @reg_frf_lsb, frt >>> 0)
+    Communicator.write_register(spi, Parameters.register().frf_msb, frt >>> 16)
+    Communicator.write_register(spi, Parameters.register().frf_mid, frt >>> 8)
+    Communicator.write_register(spi, Parameters.register().frf_lsb, frt >>> 0)
   end
 
-  # def set_tx_power(spi, level, output_pin) when output_pin == @pa_output_rfo_pin do
+  # def set_tx_power(spi, level, output_pin) when output_pin == Parameters.pa.output_rfo_pin do
   #   cond do
-  #     level < 0 -> Communicator.write_register(spi, @reg_pa_config, 0x70 ||| 0)
-  #     level > 14 -> Communicator.write_register(spi, @reg_pa_config, 0x70 ||| 14)
-  #     level >= 0 -> Communicator.write_register(spi, @reg_pa_config, 0x70 ||| level)
+  #     level < 0 -> Communicator.write_register(spi, Parameters.register.pa_config, 0x70 ||| 0)
+  #     level > 14 -> Communicator.write_register(spi, Parameters.register.pa_config, 0x70 ||| 14)
+  #     level >= 0 -> Communicator.write_register(spi, Parameters.register.pa_config, 0x70 ||| level)
   #   end
   # end
 
   def set_tx_power(spi, level) do
     if level > 17 do
-      Communicator.write_register(spi, @reg_pa_dac, 0x87)
+      Communicator.write_register(spi, Parameters.register().pa_dac, 0x87)
       set_ocp(spi, 140)
 
       if level > 20,
-        do: Communicator.write_register(spi, @reg_pa_config, @pa_boost ||| 15),
-        else: Communicator.write_register(spi, @reg_pa_config, @pa_boost ||| level - 5)
+        do:
+          Communicator.write_register(
+            spi,
+            Parameters.register().pa_config,
+            Parameters.pa().boost ||| 15
+          ),
+        else:
+          Communicator.write_register(
+            spi,
+            Parameters.register().pa_config,
+            Parameters.pa().boost ||| level - 5
+          )
     else
-      Communicator.write_register(spi, @reg_pa_dac, 0x84)
+      Communicator.write_register(spi, Parameters.register().pa_dac, 0x84)
       set_ocp(spi, 100)
 
       if level < 2,
-        do: Communicator.write_register(spi, @reg_pa_config, @pa_boost ||| 0),
-        else: Communicator.write_register(spi, @reg_pa_config, @pa_boost ||| level - 2)
+        do:
+          Communicator.write_register(
+            spi,
+            Parameters.register().pa_config,
+            Parameters.pa().boost ||| 0
+          ),
+        else:
+          Communicator.write_register(
+            spi,
+            Parameters.register().pa_config,
+            Parameters.pa().boost ||| level - 2
+          )
     end
   end
 
   def set_ocp(spi, ocp) do
     cond do
       ocp <= 120 ->
-        Communicator.write_register(spi, @reg_ocp, 0x20 ||| (0x1F &&& uint8((uint8(ocp) - 45) / 5)))
+        Communicator.write_register(
+          spi,
+          Parameters.register().ocp,
+          0x20 ||| (0x1F &&& uint8((uint8(ocp) - 45) / 5))
+        )
 
       ocp <= 240 ->
-        Communicator.write_register(spi, @reg_ocp, 0x20 ||| (0x1F &&& uint8((uint8(ocp) + 30) / 10)))
+        Communicator.write_register(
+          spi,
+          Parameters.register().ocp,
+          0x20 ||| (0x1F &&& uint8((uint8(ocp) + 30) / 10))
+        )
 
       ocp > 240 ->
-        Communicator.write_register(spi, @reg_ocp, 0x20 ||| (0x1F &&& 27))
+        Communicator.write_register(spi, Parameters.register().ocp, 0x20 ||| (0x1F &&& 27))
     end
   end
 
@@ -167,27 +167,109 @@ defmodule LoRa.Modem do
 
       Communicator.write_register(
         spi,
-        @reg_modem_config_3,
-        bit_write(Communicator.read_register(spi, @reg_modem_config_3), 3, ldo_on)
+        Parameters.register().modem_config_3,
+        bit_write(
+          Communicator.read_register(spi, Parameters.register().modem_config_3),
+          3,
+          ldo_on
+        )
       )
     end
   end
 
-  def set_bw({bw, _freq}, spi, reg) do
-    Communicator.write_register(spi, @reg_modem_config_1, (reg &&& 0x0F) ||| bw <<< 4)
+  def set_spreading_factor(sf, spi) do
+    if sf == 6 do
+      Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC5)
+      Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0C)
+    else
+      Communicator.write_register(spi, Parameters.register().detection_optimize, 0xC3)
+      Communicator.write_register(spi, Parameters.register().detection_threshold, 0x0A)
+    end
+
+    config2 = Communicator.read_register(spi, Parameters.register().modem_config_2)
+
+    sf_ = (config2 &&& 0x0F) ||| (sf <<< 4 &&& 0xF0)
+    Communicator.write_register(spi, Parameters.register().modem_config_2, sf_)
+
+    set_ldo_flag(spi)
   end
 
-  def get_signal_band_width(spi) do
-    bw = Communicator.read_register(spi, @reg_modem_config_1) >>> 4
+  def set_bandwidth(sbw, spi) do
+    reg = Communicator.read_register(spi, Parameters.register().modem_config_1)
 
-    @bw_freqs[bw]
+    Parameters.bw_freqs()
+    |> Enum.filter(fn {_i, f} -> sbw <= f end)
+    |> List.first()
+    |> set_bw(spi, reg)
+
+    set_ldo_flag(spi)
+  end
+
+  defp set_bw({bw, _freq}, spi, reg),
+    do:
+      Communicator.write_register(
+        spi,
+        Parameters.register().modem_config_1,
+        (reg &&& 0x0F) ||| bw <<< 4
+      )
+
+  def set_base_address(spi) do
+    # Set base addresses
+    Communicator.write_register(spi, Parameters.register().fifo_tx_base_addr, 0)
+    Communicator.write_register(spi, Parameters.register().fifo_rx_base_addr, 0)
+  end
+
+  def set_LNA_boost(spi),
+    do:
+      Communicator.write_register(
+        spi,
+        Parameters.register().lna,
+        Communicator.read_register(spi, Parameters.register().lna) ||| 0x03
+      )
+
+  def set_auto_AGC(spi),
+    do: Communicator.write_register(spi, Parameters.register().modem_config_3, 0x04)
+
+  def set_header_mode(spi, expl) do
+    Communicator.write_register(
+      spi,
+      Parameters.register().modem_config_1,
+      Communicator.read_register(spi, Parameters.register().modem_config_1) |||
+        Parameters.header(expl)
+    )
+
+    reset_fifo_payload(spi)
+  end
+
+  def enable_crc(spi),
+    do:
+      Communicator.write_register(
+        spi,
+        Parameters.register().modem_config_2,
+        Communicator.read_register(spi, Parameters.register().modem_config_2) ||| 0x04
+      )
+
+  def disable_crc(spi),
+    do:
+      Communicator.write_register(
+        spi,
+        Parameters.register().modem_config_2,
+        Communicator.read_register(spi, Parameters.register().modem_config_2) ||| 0xFB
+      )
+
+  def get_signal_band_width(spi) do
+    bw = Communicator.read_register(spi, Parameters.register().modem_config_1) >>> 4
+
+    Parameters.bw_freqs()[bw]
   end
 
   def get_spreading_factor(spi) do
-    config = Communicator.read_register(spi, @reg_modem_config_2)
+    config = Communicator.read_register(spi, Parameters.register().modem_config_2)
 
     config >>> 4
   end
+
+  def get_version(spi), do: Communicator.read_register(spi, Parameters.register().version)
 
   def bit_write(value, bit, subs) do
     {ini, fim} = list_bits(value) |> add_zeros(bit) |> Enum.split(bit)
@@ -242,4 +324,6 @@ defmodule LoRa.Modem do
         rem(trunc(val), 256)
     end
   end
+
+  # defp change_third_bit(value, bit), do: if(bit == 0, do: value &&& 0xF7, else: value ||| 8)
 end
