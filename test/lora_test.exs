@@ -9,4 +9,19 @@ defmodule LoRaTest do
     assert LoRa.set_signal_band_width(62.5e3) == :ok
     assert LoRa.enable_crc() == :ok
   end
+
+  test "Transmitting" do
+    LoRa.begin_packet()
+    LoRa.print("0")
+    LoRa.end_packet()
+    LoRa.begin_packet()
+    LoRa.print("1 - Hello World")
+    LoRa.end_packet()
+    LoRa.begin_packet()
+    LoRa.print("2 - Baltar é o terror")
+    LoRa.end_packet()
+    LoRa.begin_packet()
+    LoRa.print("3 - ;)")
+    LoRa.end_packet()
+  end
 end
