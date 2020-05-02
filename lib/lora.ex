@@ -101,11 +101,7 @@ defmodule LoRa do
   def end_packet(), do: GenServer.cast(__MODULE__, :end_packet)
   def print(text), do: GenServer.cast(__MODULE__, {:print, text})
   def enable_crc(), do: GenServer.cast(__MODULE__, :enable_crc)
-  # deprecated
-  def crc(), do: enable_crc()
   def disable_crc(), do: GenServer.cast(__MODULE__, :disable_crc)
-  # deprecated
-  def no_crc(), do: disable_crc()
 
   def init(config) do
     pin_ss = Keyword.get(config, :ss, @lora_default_ss_pin)
@@ -121,33 +117,16 @@ defmodule LoRa do
     state = %{spi: nil, rst: nil, config: nil}
 
     Logger.info("Start LoRa Device")
+    {:ok, rst} = GPIO.start_link(pin_reset, :output)
+    reset_modem(rst)
 
-    cond do
-      pin_reset > 0 ->
-        {:ok, rst} = GPIO.start_link(pin_reset, :output)
-        GPIO.write(rst, 1)
-        :timer.sleep(20)
-        GPIO.write(rst, 0)
-        :timer.sleep(20)
-        GPIO.write(rst, 1)
-        :timer.sleep(10)
-
-        {:ok,
-         %{
-           state
-           | spi: %{pid: spi, ss: ss},
-             rst: rst,
-             config: %{frequency: 0, impl_header: false, packet_index: 0, on_receive: nil}
-         }}
-
-      pin_reset == nil ->
-        {:ok,
-         %{
-           state
-           | spi: %{pid: spi, ss: ss},
-             config: %{frequency: 0, impl_header: false, packet_index: 0, on_receive: nil}
-         }}
-    end
+    {:ok,
+     %{
+       state
+       | spi: %{pid: spi, ss: ss},
+         rst: rst,
+         config: %{frequency: 0, impl_header: false, packet_index: 0, on_receive: nil}
+     }}
   end
 
   def handle_info({:DOWN, _ref, :process, _from, type}, state) do
@@ -191,10 +170,6 @@ defmodule LoRa do
     else
       GenServer.cast(__MODULE__, :expl_header_mode)
     end
-
-    # Reset FIFO address and payload length
-    write_register(state[:spi], @reg_fifo_addr_ptr, 0)
-    write_register(state[:spi], @reg_payload_length, 0)
 
     {:noreply, state}
   end
@@ -286,6 +261,8 @@ defmodule LoRa do
       read_register(state[:spi], @reg_modem_config_1) ||| 0x01
     )
 
+    reset_fifo_payload(state)
+
     {:noreply, %{state | :config => %{state[:config] | :impl_header => true}}}
   end
 
@@ -296,7 +273,15 @@ defmodule LoRa do
       read_register(state[:spi], @reg_modem_config_1) ||| 0xFE
     )
 
+    reset_fifo_payload(state)
+
     {:noreply, %{state | :config => %{state[:config] | :impl_header => false}}}
+  end
+
+  defp reset_fifo_payload(state) do
+    # Reset FIFO address and payload length
+    write_register(state[:spi], @reg_fifo_addr_ptr, 0)
+    write_register(state[:spi], @reg_payload_length, 0)
   end
 
   defp set_bw({bw, _freq}, spi, reg) do
@@ -315,11 +300,14 @@ defmodule LoRa do
   def verify_end_packet(state, counter \\ 0) do
     if (read_register(state.spi, @reg_irq_flags) &&& @irq_tx_done_mask) == 0 do
       :timer.sleep(1)
+
       if counter <= @verify_end_packet_cycles,
         do: verify_end_packet(state, counter + 1),
         else: Logger.error("Timeout")
     else
       write_register(state.spi, @reg_irq_flags, @irq_tx_done_mask)
+      reset_modem(state.rst)
+      begin(state.config.frequency)
     end
   end
 
@@ -338,6 +326,15 @@ defmodule LoRa do
 
   defp idle(spi) do
     write_register(spi, @reg_op_mode, @mode_long_range_mode ||| @mode_stdby)
+  end
+
+  defp reset_modem(rst) do
+    GPIO.write(rst, 1)
+    :timer.sleep(20)
+    GPIO.write(rst, 0)
+    :timer.sleep(20)
+    GPIO.write(rst, 1)
+    :timer.sleep(10)
   end
 
   defp set_frequency(spi, freq) do
@@ -405,9 +402,9 @@ defmodule LoRa do
     spf = get_spreading_factor(spi)
     bw = get_signal_band_width(spi)
 
-    unless bw == nil do 
+    unless bw == nil do
       symbol_duration = 1000 / (bw / (1 <<< spf))
-  
+
       ldo_on = if symbol_duration > 16, do: 1, else: 0
 
       write_register(
