@@ -16,29 +16,46 @@ defmodule LoRa.Modem do
   #   if (Communicator.read_register(spi, Parameters.register.op_mode) &&& Parameters.mode.tx) == Parameters.mode.tx, do: true, else: false
   # end
 
-  def begin_packet(spi, header? \\ false) do
+  def begin(frequency, spi, power \\ 17) do
+    # Sleep mode
+    sleep(spi)
+    # Set frequency
+    set_frequency(frequency, spi)
+
+    set_base_address(spi)
+    # Set LNA boost
+    set_LNA_boost(spi)
+    # Set auto AGC
+    set_auto_AGC(spi)
+    # Set output power to 17 dBm
+    set_tx_power(power, spi)
+    # put in standby mode
     idle(spi)
-    set_header_mode(spi, header?)
   end
 
-  def end_packet(spi, from, async? \\ false) do
+  def end_packet(from, spi, async? \\ false) do
     Communicator.write_register(
       spi,
       Parameters.register().op_mode,
       Parameters.mode().long_range_mode ||| Parameters.mode().tx
     )
 
-    unless async?, do: verify_end_packet(spi, from)
+    unless async? do
+      pid = spawn_link(__MODULE__, :verify_end_packet, [spi, from])
+      ref = Process.monitor(pid)
+
+      Task.yield(%Task{pid: pid, ref: ref, owner: from}, 2000)
+    end
   end
 
   def verify_end_packet(spi, from, counter \\ 0) do
-    
-    if (Communicator.read_register(spi, Parameters.register().irq_flags) &&& Parameters.irq().tx_done_mask) == 0 do
+    if (Communicator.read_register(spi, Parameters.register().irq_flags) &&&
+          Parameters.irq().tx_done_mask) == 0 do
       :timer.sleep(1)
 
       if counter <= Parameters.max().end_packet_cycles,
         do: verify_end_packet(spi, from, counter + 1),
-        else: send(from, :send_timeout)
+        else: Logger.error("LoRa: send timeout")
     else
       # Reset flags
       Communicator.write_register(
@@ -47,6 +64,7 @@ defmodule LoRa.Modem do
         Parameters.irq().tx_done_mask
       )
 
+      Logger.debug("LoRa: iterations: #{counter}")
       send(from, :send_ok)
     end
   end
@@ -82,7 +100,7 @@ defmodule LoRa.Modem do
     Communicator.write_register(spi, Parameters.register().payload_length, 0)
   end
 
-  def set_frequency(spi, freq) do
+  def set_frequency(freq, spi) do
     frt = trunc((trunc(freq) <<< 19) / 32_000_000)
     Communicator.write_register(spi, Parameters.register().frf_msb, frt >>> 16)
     Communicator.write_register(spi, Parameters.register().frf_mid, frt >>> 8)
@@ -97,7 +115,7 @@ defmodule LoRa.Modem do
   #   end
   # end
 
-  def set_tx_power(spi, level) do
+  def set_tx_power(level, spi) do
     if level > 17 do
       Communicator.write_register(spi, Parameters.register().pa_dac, 0x87)
       set_ocp(spi, 140)
@@ -135,7 +153,7 @@ defmodule LoRa.Modem do
     end
   end
 
-  def set_ocp(spi, ocp) do
+  def set_ocp(ocp, spi) do
     cond do
       ocp <= 120 ->
         Communicator.write_register(

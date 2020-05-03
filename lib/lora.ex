@@ -20,7 +20,8 @@ defmodule LoRa do
 
   def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config, name: __MODULE__)
   def begin(frequency), do: GenServer.call(__MODULE__, {:begin, frequency})
-  def end_lora(), do: GenServer.cast(__MODULE__, :end_lora)
+  def sleep(), do: GenServer.cast(__MODULE__, :sleep)
+  def awake(), do: GenServer.cast(__MODULE__, :awake)
 
   def set_spreading_factor(sf \\ 6) when sf >= 6 and sf <= 12,
     do: GenServer.cast(__MODULE__, {:set_sf, sf})
@@ -29,7 +30,11 @@ defmodule LoRa do
   def enable_crc(), do: GenServer.cast(__MODULE__, :enable_crc)
   def disable_crc(), do: GenServer.cast(__MODULE__, :disable_crc)
 
-  def send(msg, header \\ false), do: GenServer.cast(__MODULE__, {:send, msg, header})
+  def send(msg, header \\ true), do: GenServer.cast(__MODULE__, {:send, msg, header})
+
+  def begin_packet, do: GenServer.cast(__MODULE__, :begin_packet)
+  def end_packet, do: GenServer.cast(__MODULE__, :end_packet)
+  def print(text), do: GenServer.cast(__MODULE__, {:print, text})
 
   def init(config) do
     pin_ss = Keyword.get(config, :ss, @lora_default_ss_pin)
@@ -53,27 +58,21 @@ defmodule LoRa do
        state
        | spi: %{pid: spi, ss: ss},
          rst: rst,
-         config: %{frequency: 0, impl_header: false, packet_index: 0, on_receive: nil}
+         config: %{frequency: 0, header: true, packet_index: 0, on_receive: nil}
      }}
   end
 
   def handle_info(:send_ok, state) do
     Logger.debug("LoRa: message sent")
+
     Modem.reset(state.rst)
+    Modem.begin(state.config.frequency, state.spi)
 
-    Modem.sleep(state.spi)
-    # Set frequency
-    Modem.set_frequency(state.spi, state.config.frequency)
+    {:noreply, state}
+  end
 
-    Modem.set_base_address(state.spi)
-    # Set LNA boost
-    Modem.set_LNA_boost(state.spi)
-    # Set auto AGC
-    Modem.set_auto_AGC(state.spi)
-    # Set output power to 17 dBm
-    Modem.set_tx_power(state.spi, 17)
-    # put in standby mode
-    Modem.idle(state.spi)
+  def handle_info({:DOWN, _ref, :process, _from, type}, state) do
+    Logger.debug("LoRa: send packet - Exit with #{type}")
     {:noreply, state}
   end
 
@@ -86,21 +85,7 @@ defmodule LoRa do
     version = Modem.get_version(state.spi)
 
     if version == 0x12 do
-      # Sleep mode
-      Modem.sleep(state.spi)
-      # Set frequency
-      Modem.set_frequency(state.spi, frequency)
-
-      Modem.set_base_address(state.spi)
-      # Set LNA boost
-      Modem.set_LNA_boost(state.spi)
-      # Set auto AGC
-      Modem.set_auto_AGC(state.spi)
-      # Set output power to 17 dBm
-      Modem.set_tx_power(state.spi, 17)
-      # put in standby mode
-      Modem.idle(state.spi)
-
+      Modem.begin(frequency, state.spi)
       {:reply, :ok, %{state | :config => %{state[:config] | :frequency => frequency}}}
     else
       Logger.error("LoRa: Not a Valid Version")
@@ -108,10 +93,11 @@ defmodule LoRa do
     end
   end
 
-  def handle_cast({:send, msg, header}, state) do
-    Modem.begin_packet(state.spi, header)
-    Communicator.print(msg, state.spi)
-    Modem.end_packet(state.spi, __MODULE__)
+  def handle_cast({:send, text, header}, state) do
+    Modem.idle(state.spi)
+    GenServer.cast(__MODULE__, {:header_mode, header})
+    Communicator.print(text, state.spi)
+    self() |> Modem.end_packet(state.spi)
 
     {:noreply, state}
   end
@@ -126,10 +112,14 @@ defmodule LoRa do
     {:noreply, state}
   end
 
-  def handle_cast(:end_lora, state) do
+  def handle_cast(:sleep, state) do
     # Put in sleep mode
     Modem.sleep(state.spi)
     SPI.release(state.spi)
+    {:noreply, state}
+  end
+
+  def handle_cast(:awake, state) do
     {:noreply, state}
   end
 
@@ -143,13 +133,13 @@ defmodule LoRa do
     {:noreply, state}
   end
 
-  def handle_cast(:impl_header_mode, state) do
-    Modem.set_header_mode(state.spi, true)
-    {:noreply, %{state | :config => %{state[:config] | :impl_header => true}}}
+  def handle_cast({:header_mode, false}, state) do
+    Modem.set_header_mode(state.spi, false)
+    {:noreply, %{state | :config => %{state[:config] | :header => false}}}
   end
 
-  def handle_cast(:expl_header_mode, state) do
-    Modem.set_header_mode(state.spi, false)
-    {:noreply, %{state | :config => %{state[:config] | :impl_header => false}}}
+  def handle_cast({:header_mode, true}, state) do
+    Modem.set_header_mode(state.spi, true)
+    {:noreply, %{state | :config => %{state[:config] | :header => true}}}
   end
 end
