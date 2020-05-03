@@ -42,10 +42,7 @@ defmodule LoRa do
     device = Keyword.get(config, :spi, @lora_default_spi)
     speed_hz = Keyword.get(config, :spi_speed, @lora_default_spi_frequency)
 
-    {:ok, ss} = GPIO.start_link(pin_ss, :output)
-    GPIO.write(ss, 1)
-
-    {:ok, spi} = SPI.start_link(device, speed_hz: speed_hz, mode: 0)
+    {:ok, ss, spi} = start_spi(device, pin_ss, speed_hz)
 
     state = %{spi: nil, rst: nil, config: nil}
 
@@ -56,7 +53,7 @@ defmodule LoRa do
     {:ok,
      %{
        state
-       | spi: %{pid: spi, ss: ss},
+       | spi: %{pid: spi, ss: ss, operator: %{device: device, pin_ss: pin_ss, speed_hz: speed_hz}},
          rst: rst,
          config: %{frequency: 0, header: true, packet_index: 0, on_receive: nil}
      }}
@@ -65,14 +62,16 @@ defmodule LoRa do
   def handle_info(:send_ok, state) do
     Logger.debug("LoRa: message sent")
 
-    Modem.reset(state.rst)
-    Modem.begin(state.config.frequency, state.spi)
+    Modem.tx_done_flag(state.spi)
 
     {:noreply, state}
   end
 
   def handle_info({:DOWN, _ref, :process, _from, type}, state) do
-    Logger.debug("LoRa: send packet - Exit with #{type}")
+    Logger.error("LoRa: send packet: Exit with #{type}")
+
+    Modem.tx_done_flag(state.spi)
+
     {:noreply, state}
   end
 
@@ -115,12 +114,18 @@ defmodule LoRa do
   def handle_cast(:sleep, state) do
     # Put in sleep mode
     Modem.sleep(state.spi)
-    SPI.release(state.spi)
+    SPI.release(state.spi.pid)
     {:noreply, state}
   end
 
   def handle_cast(:awake, state) do
-    {:noreply, state}
+    operator = state.spi.operator
+
+    {:ok, ss, spi} = start_spi(operator.device, operator.pin_ss, operator.speed_hz)
+    new_spi = %{state[:spi] | pid: spi, ss: ss}
+
+    Modem.idle(new_spi)
+    {:noreply, %{state | :spi => new_spi}}
   end
 
   def handle_cast(:enable_crc, state) do
@@ -133,13 +138,15 @@ defmodule LoRa do
     {:noreply, state}
   end
 
-  def handle_cast({:header_mode, false}, state) do
-    Modem.set_header_mode(state.spi, false)
-    {:noreply, %{state | :config => %{state[:config] | :header => false}}}
+  def handle_cast({:header_mode, value}, state) do
+    Modem.set_header_mode(value, state.spi)
+    {:noreply, %{state | :config => %{state[:config] | :header => value}}}
   end
 
-  def handle_cast({:header_mode, true}, state) do
-    Modem.set_header_mode(state.spi, true)
-    {:noreply, %{state | :config => %{state[:config] | :header => true}}}
+  defp start_spi(device, pin_ss, speed_hz) do
+    {:ok, ss} = GPIO.start_link(pin_ss, :output)
+    GPIO.write(ss, 1)
+    {:ok, spi} = SPI.start_link(device, speed_hz: speed_hz, mode: 0)
+    {:ok, ss, spi}
   end
 end
