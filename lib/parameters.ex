@@ -13,27 +13,27 @@ defmodule LoRa.Parameters do
     fifo_addr_ptr: 0x0D,
     fifo_tx_base_addr: 0x0E,
     fifo_rx_base_addr: 0x0F,
-    # fifo_rx_current_addr: 0x10,
+    fifo_rx_current_addr: 0x10,
     irq_flags: 0x12,
-    # rx_nb_bytes: 0x13,
-    # pkt_snr_value: 0x19,
-    # pkt_rssi_value: 0x1A,
+    rx_nb_bytes: 0x13,
+    pkt_snr_value: 0x19,
+    pkt_rssi_value: 0x1A,
     modem_config_1: 0x1D,
     modem_config_2: 0x1E,
-    # preamble_msb: 0x20,
-    # preamble_lsb: 0x21,
+    preamble_msb: 0x20,
+    preamble_lsb: 0x21,
     payload_length: 0x22,
     modem_config_3: 0x26,
-    # freq_error_msb: 0x28,
-    # freq_error_mid: 0x29,
-    # freq_error_lsb: 0x2A,
-    # rssi_wideband: 0x2C,
+    freq_error_msb: 0x28,
+    freq_error_mid: 0x29,
+    freq_error_lsb: 0x2A,
+    rssi_wideband: 0x2C,
     detection_optimize: 0x31,
-    # invertiq: 0x33,
+    invertiq: 0x33,
     detection_threshold: 0x37,
-    # sync_word: 0x39,
-    # invertiq2: 0x3B,
-    # dio_mapping_1: 0x40,
+    sync_word: 0x39,
+    invertiq2: 0x3B,
+    dio_mapping_1: 0x40,
     version: 0x42,
     pa_dac: 0x4D
   }
@@ -63,7 +63,7 @@ defmodule LoRa.Parameters do
 
   @max %{
     pkt_length: 255,
-    end_packet_cycles: 10_000
+    end_packet_cycles: 2_000
   }
 
   @bw_freqs %{
