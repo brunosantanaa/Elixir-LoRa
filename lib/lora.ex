@@ -30,7 +30,10 @@ defmodule LoRa do
   def enable_crc(), do: GenServer.cast(__MODULE__, :enable_crc)
   def disable_crc(), do: GenServer.cast(__MODULE__, :disable_crc)
 
-  def send(msg, header \\ true), do: GenServer.cast(__MODULE__, {:send, msg, header})
+  def send(msg, header \\ true) do
+    GenServer.cast(__MODULE__, :sender_mode)
+    GenServer.cast(__MODULE__, {:send, msg, header})
+  end
 
   def begin_packet, do: GenServer.cast(__MODULE__, :begin_packet)
   def end_packet, do: GenServer.cast(__MODULE__, :end_packet)
@@ -44,7 +47,7 @@ defmodule LoRa do
 
     {:ok, ss, spi} = start_spi(device, pin_ss, speed_hz)
 
-    state = %{spi: nil, rst: nil, config: nil}
+    state = %{is_receiver?: true, spi: nil, rst: nil, config: nil}
 
     Logger.info("LoRa: Start Device")
     {:ok, rst} = GPIO.start_link(pin_reset, :output)
@@ -59,16 +62,22 @@ defmodule LoRa do
      }}
   end
 
-  def handle_info(:send_ok, state) do
-    Logger.debug("LoRa: message sent")
-
-    Modem.tx_done_flag(state.spi)
+  def handle_info(:receiver_mode, state) do
+    if state.is_receiver? do
+      Modem.parse_packet(self(), state.spi)
+      Kernel.send(self(), :receiver_mode)
+    end
 
     {:noreply, state}
   end
 
-  def handle_info({:DOWN, _ref, :process, _from, type}, state) do
-    Logger.error("LoRa: send packet: Exit with #{type}")
+  def handle_info({:receive_msg, pkt_length}, state) do
+    Logger.debug("LoRa: message recieved: #{pkt_length}Bytes")
+    {:noreply, state}
+  end
+
+  def handle_info(:send_ok, state) do
+    Logger.debug("LoRa: message sent")
 
     Modem.tx_done_flag(state.spi)
 
@@ -80,11 +89,20 @@ defmodule LoRa do
     {:noreply, state}
   end
 
+  def handle_info({:DOWN, _ref, :process, _from, type}, state) do
+    Logger.error("LoRa: send packet: Exit with #{type}")
+
+    Modem.tx_done_flag(state.spi)
+
+    {:noreply, state}
+  end
+
   def handle_call({:begin, frequency}, _from, state) do
     version = Modem.get_version(state.spi)
 
     if version == 0x12 do
       Modem.begin(frequency, state.spi)
+      Process.send_after(self(), :receiver_mode, 500)
       {:reply, :ok, %{state | :config => %{state[:config] | :frequency => frequency}}}
     else
       Logger.error("LoRa: Not a Valid Version")
@@ -92,13 +110,18 @@ defmodule LoRa do
     end
   end
 
+  def handle_cast(:sender_mode, state) do
+    {:noreply, %{state | is_receiver?: false}}
+  end
+
   def handle_cast({:send, text, header}, state) do
+    Kernel.send(self(), :receiver_mode)
     Modem.idle(state.spi)
     GenServer.cast(__MODULE__, {:header_mode, header})
     Communicator.print(text, state.spi)
     self() |> Modem.end_packet(state.spi)
 
-    {:noreply, state}
+    {:noreply, %{state | is_receiver?: true}}
   end
 
   def handle_cast({:set_sf, sf}, state) do
