@@ -18,26 +18,26 @@ defmodule LoRa do
 
   # @lora_default_dio0_pin 22
 
-  def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config, name: __MODULE__)
-  def begin(frequency), do: GenServer.call(__MODULE__, {:begin, frequency})
-  def sleep(), do: GenServer.cast(__MODULE__, :sleep)
-  def awake(), do: GenServer.cast(__MODULE__, :awake)
+  def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config ++ [owner: self()])
+  def begin(pid, frequency), do: GenServer.call(pid, {:begin, frequency})
+  def sleep(pid), do: GenServer.cast(pid, :sleep)
+  def awake(pid), do: GenServer.cast(pid, :awake)
 
-  def set_spreading_factor(sf \\ 6) when sf >= 6 and sf <= 12,
-    do: GenServer.cast(__MODULE__, {:set_sf, sf})
+  def set_spreading_factor(pid, sf \\ 6) when sf >= 6 and sf <= 12,
+    do: GenServer.cast(pid, {:set_sf, sf})
 
-  def set_signal_band_width(sbw), do: GenServer.cast(__MODULE__, {:set_sbw, sbw})
-  def enable_crc(), do: GenServer.cast(__MODULE__, :enable_crc)
-  def disable_crc(), do: GenServer.cast(__MODULE__, :disable_crc)
+  def set_signal_band_width(pid, sbw), do: GenServer.cast(pid, {:set_sbw, sbw})
+  def enable_crc(pid), do: GenServer.cast(pid, :enable_crc)
+  def disable_crc(pid), do: GenServer.cast(pid, :disable_crc)
 
-  def send(msg, header \\ true) do
-    GenServer.cast(__MODULE__, :sender_mode)
-    GenServer.cast(__MODULE__, {:send, msg, header})
+  def send(pid, msg, header \\ true) do
+    GenServer.cast(pid, :sender_mode)
+    GenServer.cast(pid, {:send, msg, header})
   end
 
-  def begin_packet, do: GenServer.cast(__MODULE__, :begin_packet)
-  def end_packet, do: GenServer.cast(__MODULE__, :end_packet)
-  def print(text), do: GenServer.cast(__MODULE__, {:print, text})
+  def begin_packet(pid), do: GenServer.cast(pid, :begin_packet)
+  def end_packet(pid), do: GenServer.cast(pid, :end_packet)
+  def print(pid, text), do: GenServer.cast(pid, {:print, text})
 
   def init(config) do
     pin_ss = Keyword.get(config, :ss, @lora_default_ss_pin)
@@ -47,7 +47,7 @@ defmodule LoRa do
 
     {:ok, ss, spi} = start_spi(device, pin_ss, speed_hz)
 
-    state = %{is_receiver?: true, spi: nil, rst: nil, config: nil}
+    state = %{is_receiver?: true, owner: config[:owner], spi: nil, rst: nil, config: nil}
 
     Logger.info("LoRa: Start Device")
     {:ok, rst} = GPIO.start_link(pin_reset, :output)
@@ -71,14 +71,9 @@ defmodule LoRa do
     {:noreply, state}
   end
 
-  def handle_info({:lora, info}, state) do
-    Logger.debug("LoRa: mensage: #{Kernel.inspect(info)}")
-    {:noreply, state}
-  end
-
   def handle_info({:receive_msg, pkt_length}, state) do
     Logger.debug("LoRa: message recieved: #{pkt_length}Bytes")
-    Modem.read(self(), state.spi)
+    Modem.read(pkt_length, state)
     {:noreply, state}
   end
 
