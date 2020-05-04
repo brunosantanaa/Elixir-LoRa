@@ -71,8 +71,14 @@ defmodule LoRa do
     {:noreply, state}
   end
 
+  def handle_info({:lora, info}, state) do
+    Logger.debug("LoRa: mensage: #{Kernel.inspect(info)}")
+    {:noreply, state}
+  end
+
   def handle_info({:receive_msg, pkt_length}, state) do
     Logger.debug("LoRa: message recieved: #{pkt_length}Bytes")
+    Modem.read(self(), state.spi)
     {:noreply, state}
   end
 

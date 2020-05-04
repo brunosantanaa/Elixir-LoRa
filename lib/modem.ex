@@ -80,6 +80,15 @@ defmodule LoRa.Modem do
     )
   end
 
+  def read(from, spi, index \\ 0, msg \\ []) do
+    r_byte = Communicator.read_register(spi, Parameters.register().fifo)
+    nb_bytes = Communicator.read_register(spi, Parameters.register().rx_nb_bytes) - 1
+
+    if nb_bytes - index + 1 > 0,
+      do: read(from, spi, index + 1, msg ++ [r_byte]),
+      else: Kernel.send(from, {:lora, %{msg: List.to_string(msg), rssi: 0}})
+  end
+
   def parse_packet(from, spi, size \\ 0) do
     irq_flags = Communicator.read_register(spi, Parameters.register().irq_flags)
 
