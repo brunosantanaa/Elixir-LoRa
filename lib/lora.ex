@@ -19,7 +19,6 @@ defmodule LoRa do
   # SPI
   @lora_default_spi "spidev0.0"
   @lora_default_spi_frequency 8_000_000
-  #@lora_default_ss_pin 24
   @lora_default_reset_pin 25
 
   # @lora_default_dio0_pin 22
