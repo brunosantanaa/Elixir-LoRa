@@ -1,7 +1,6 @@
 defmodule LoRa.Communicator do
   use Bitwise
 
-  alias ElixirALE.GPIO
   alias ElixirALE.SPI
 
   alias LoRa.Parameters
