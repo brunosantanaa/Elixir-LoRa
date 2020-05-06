@@ -88,7 +88,7 @@ defmodule LoRa.Modem do
       do: read(frequency, owner, spi, index + 1, msg ++ [r_byte]),
       else:
         Kernel.send(
-          state.owner,
+          owner,
           {:lora,
            %{
              paket: List.to_string(msg),
