@@ -20,8 +20,8 @@ defmodule LoRa do
   @lora_default_spi "spidev0.0"
   @lora_default_spi_frequency 8_000_000
   @lora_default_reset_pin 25
-
   # @lora_default_dio0_pin 22
+  
   @doc """
   Start and link a new GenServer for LoRa radio.
 
