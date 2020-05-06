@@ -73,7 +73,7 @@ defmodule LoRa do
 
   def handle_info({:receive_msg, pkt_length}, state) do
     Logger.debug("LoRa: message recieved: #{pkt_length}Bytes")
-    Modem.read(pkt_length, state)
+    Modem.read(state.frequency, state.owner, state.spi)
     {:noreply, state}
   end
 

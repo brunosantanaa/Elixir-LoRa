@@ -80,31 +80,30 @@ defmodule LoRa.Modem do
     )
   end
 
-  def read(length, state, index \\ 0, msg \\ []) do
-    r_byte = Communicator.read_register(state.spi, Parameters.register().fifo)
-    nb_bytes = Communicator.read_register(state.spi, Parameters.register().rx_nb_bytes) - 1
+  def read(frequency, owner, spi, index \\ 0, msg \\ []) do
+    r_byte = Communicator.read_register(spi, Parameters.register().fifo)
+    nb_bytes = Communicator.read_register(spi, Parameters.register().rx_nb_bytes) - 1
 
     if nb_bytes - index + 1 > 0,
-      do: read(length, state, index + 1, msg ++ [r_byte]),
+      do: read(frequency, owner, spi, index + 1, msg ++ [r_byte]),
       else:
         Kernel.send(
           state.owner,
           {:lora,
            %{
              paket: List.to_string(msg),
-             length: length,
-             rssi: rssi(state),
-             snr: snr(state.spi),
-             timestamp: DateTime.now!("Etc/UTC")
+             rssi: rssi(frequency, spi),
+             snr: snr(spi),
+             time: DateTime.now!("Etc/UTC")
            }}
         )
   end
 
   def snr(spi), do: Communicator.read_register(spi, Parameters.register().pkt_snr_value) * 0.25
 
-  def rssi(state) do
-    rssi_value = Communicator.read_register(state.spi, Parameters.register().pkt_rssi_value)
-    rssi_value - if state.config.frequency < 868.0e6, do: 164, else: 157
+  def rssi(frequency, spi) do
+    rssi_value = Communicator.read_register(spi, Parameters.register().pkt_rssi_value)
+    rssi_value - if frequency < 868.0e6, do: 164, else: 157
   end
 
   def parse_packet(from, spi, size \\ 0) do
