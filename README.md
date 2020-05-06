@@ -28,13 +28,13 @@ LoRa.set_spreading_factor(lora_pid, 8)
 LoRa.set_bandwidth(lora_pid, 62.5e3)
 ```
 
-### Send data
+### Sending data
 
 ```elixir
 LoRa.send(lora_pid, [value: 10])
 ```
 
-### Receive data
+### Receiveing data
 
 When the radio receives some data it sends a message to the process that started the link.
 
