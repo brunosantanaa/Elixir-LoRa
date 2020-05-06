@@ -1,4 +1,10 @@
 defmodule LoRa do
+  @moduledoc """
+  This is a module for transmitter data using LoRa Radios.
+  
+  Radios:
+    * Semtech SX1276/77/78/79 based boards.
+  """
   use Bitwise
   use GenServer
 
@@ -13,39 +19,57 @@ defmodule LoRa do
   # SPI
   @lora_default_spi "spidev0.0"
   @lora_default_spi_frequency 8_000_000
-  @lora_default_ss_pin 24
+  #@lora_default_ss_pin 24
   @lora_default_reset_pin 25
 
   # @lora_default_dio0_pin 22
-
-  def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config ++ [owner: self()])
+  @doc """
+  Start and link a new LoRa-Radio. `config` should be gpio
+  """
+  def start_link([config] \\ []), do: GenServer.start_link(__MODULE__, config ++ [owner: self()])
+  @doc """
+  
+  """
   def begin(pid, frequency), do: GenServer.call(pid, {:begin, frequency})
+  @doc """
+  
+  """
   def sleep(pid), do: GenServer.cast(pid, :sleep)
+  @doc """
+  
+  """
   def awake(pid), do: GenServer.cast(pid, :awake)
+  @doc """
 
+  """
   def set_spreading_factor(pid, sf \\ 6) when sf >= 6 and sf <= 12,
     do: GenServer.cast(pid, {:set_sf, sf})
+  @doc """
 
+  """
   def set_signal_band_width(pid, sbw), do: GenServer.cast(pid, {:set_sbw, sbw})
+  @doc """
+  
+  """
   def enable_crc(pid), do: GenServer.cast(pid, :enable_crc)
+  @doc """
+  
+  """
   def disable_crc(pid), do: GenServer.cast(pid, :disable_crc)
-
+  @doc """
+  
+  """
   def send(pid, msg, header \\ true) do
     GenServer.cast(pid, :sender_mode)
     GenServer.cast(pid, {:send, msg, header})
   end
 
-  def begin_packet(pid), do: GenServer.cast(pid, :begin_packet)
-  def end_packet(pid), do: GenServer.cast(pid, :end_packet)
-  def print(pid, text), do: GenServer.cast(pid, {:print, text})
-
   def init(config) do
-    pin_ss = Keyword.get(config, :ss, @lora_default_ss_pin)
     pin_reset = Keyword.get(config, :rst, @lora_default_reset_pin)
     device = Keyword.get(config, :spi, @lora_default_spi)
     speed_hz = Keyword.get(config, :spi_speed, @lora_default_spi_frequency)
 
-    {:ok, ss, spi} = start_spi(device, pin_ss, speed_hz)
+    {:ok, spi} = start_spi(device, speed_hz)
 
     state = %{is_receiver?: true, owner: config[:owner], spi: nil, rst: nil, config: nil}
 
@@ -56,7 +80,7 @@ defmodule LoRa do
     {:ok,
      %{
        state
-       | spi: %{pid: spi, ss: ss, operator: %{device: device, pin_ss: pin_ss, speed_hz: speed_hz}},
+       | spi: %{pid: spi, operator: %{device: device, speed_hz: speed_hz}},
          rst: rst,
          config: %{frequency: 0, header: true, packet_index: 0, on_receive: nil}
      }}
@@ -145,8 +169,8 @@ defmodule LoRa do
   def handle_cast(:awake, state) do
     operator = state.spi.operator
 
-    {:ok, ss, spi} = start_spi(operator.device, operator.pin_ss, operator.speed_hz)
-    new_spi = %{state[:spi] | pid: spi, ss: ss}
+    {:ok, spi} = start_spi(operator.device, operator.speed_hz)
+    new_spi = %{state[:spi] | pid: spi}
 
     Modem.idle(new_spi)
     {:noreply, %{state | :spi => new_spi}}
@@ -167,10 +191,8 @@ defmodule LoRa do
     {:noreply, %{state | :config => %{state[:config] | :header => value}}}
   end
 
-  defp start_spi(device, pin_ss, speed_hz) do
-    {:ok, ss} = GPIO.start_link(pin_ss, :output)
-    GPIO.write(ss, 1)
+  defp start_spi(device, speed_hz) do
     {:ok, spi} = SPI.start_link(device, speed_hz: speed_hz, mode: 0)
-    {:ok, ss, spi}
+    {:ok, spi}
   end
 end

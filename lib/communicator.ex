@@ -33,9 +33,7 @@ defmodule LoRa.Communicator do
   end
 
   def single_transfer(spi, address, value) do
-    GPIO.write(spi.ss, 0)
     <<_, resp>> = SPI.transfer(spi.pid, <<address, value>>)
-    GPIO.write(spi.ss, 1)
     resp
   end
 end
