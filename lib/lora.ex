@@ -33,7 +33,7 @@ defmodule LoRa do
       {:ok, lora} = LoRa.start_link([spi: "spidev0.1", spi_speed: 5_000_000, rst: 27])
   
   """
-  def start_link([config] \\ []), do: GenServer.start_link(__MODULE__, config ++ [owner: self()])
+  def start_link(config \\ []), do: GenServer.start_link(__MODULE__, config ++ [owner: self()])
   @doc """
   Initialize the LoRa Radio and set your frequency work.
       {:ok, lora} = LoRa.start_link()
@@ -94,7 +94,7 @@ defmodule LoRa do
 
     {:ok, spi} = start_spi(device, speed_hz)
 
-    state = %{is_receiver?: true, owner: config.owner, spi: nil, rst: nil, config: nil}
+    state = %{is_receiver?: true, owner: config[:owner], spi: nil, rst: nil, config: nil}
 
     Logger.info("LoRa: Start Device")
     {:ok, rst} = GPIO.start_link(pin_reset, :output)
@@ -120,7 +120,7 @@ defmodule LoRa do
 
   def handle_info({:receive_msg, pkt_length}, state) do
     Logger.debug("LoRa: message recieved: #{pkt_length}Bytes")
-    Modem.read(state.frequency, state.owner, state.spi)
+    Modem.read(state.config.frequency, state.owner, state.spi)
     {:noreply, state}
   end
 
