@@ -1,8 +1,9 @@
 # LoRa
+![Hex.pm](https://img.shields.io/hexpm/v/lora)
 
 This is a module for transmitter data using LoRa Radios.
 
-Semtech SX1276/77/78/79
+Available for Nerves Project with Semtech SX1276/77/78/79 based boards.
 
 ## Getting started
 
