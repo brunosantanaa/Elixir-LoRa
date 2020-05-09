@@ -1,20 +1,33 @@
 # LoRa
 
+This is a module for transmitter data using LoRa Radios.
+
+Semtech SX1276/77/78/79
+
 ## Getting started
+
+### Hardware 
+Example using **Raspberry Pi** and **Adafruit RFM9xx Radio**
+
+![Lora](assets/rasp_loraada.png)
 
 ### Installation
 
-The package can be installed by adding `LoRa` to your list of dependencies in `mix.exs`:
+The package can be installed in your [Nerves Project](https://www.nerves-project.org/) by adding `LoRa` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:lora, "~> 0.1.0"}
+    {:lora, "~> 1.0"}
   ]
 end
 ```
 
 ### Configure SPI
+
+Can be set the parameters of SPI and GPIO pin for the reset of radio.
+  
+standard values: `spi: "spidev0.0", spi_speed: 8_000_000, rst: 25`
 
 ```elixir
 {:ok, lora_pid} = LoRa.start_link([spi: "spidev0.1", rst: 27])
@@ -23,15 +36,18 @@ end
 ### Configure Radio
 
 ```elixir
-LoRa.begin(lora_pid, 433.0e6)
-LoRa.set_spreading_factor(lora_pid, 8)
-LoRa.set_bandwidth(lora_pid, 62.5e3)
+iex> LoRa.begin(lora_pid, 433.0e6)
+:ok
+iex> LoRa.set_spreading_factor(lora_pid, 8)
+:ok
+iex> LoRa.set_bandwidth(lora_pid, 62.5e3)
+:ok
 ```
 
 ### Sending data
 
 ```elixir
-LoRa.send(lora_pid, [value: 10])
+iex> LoRa.send(lora_pid, [value: 10])
 ```
 
 ### Receiveing data
