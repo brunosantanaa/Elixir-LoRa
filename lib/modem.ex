@@ -91,7 +91,7 @@ defmodule LoRa.Modem do
           owner,
           {:lora,
            %{
-             paket: List.to_string(msg),
+             packet: List.to_string(msg),
              rssi: rssi(frequency, spi),
              snr: snr(spi),
              time: DateTime.now!("Etc/UTC")

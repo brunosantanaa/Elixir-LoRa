@@ -59,7 +59,7 @@ When the radio receives some data it sends a message to the process that started
 iex> flush()
 {:lora,
  %{
-   paket: "hello world",
+   packet: "hello world",
    rssi: -90,
    snr: 6,
    time: ~U[2020-05-06 21:13:11.161125Z]
