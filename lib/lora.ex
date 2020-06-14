@@ -167,7 +167,7 @@ defmodule LoRa do
     Modem.idle(state.spi)
     GenServer.cast(__MODULE__, {:header_mode, header})
     data
-    |> Kernel.inspect()
+    |> (fn(a) -> if is_bitstring(a), do: a, else: Kernel.inspect(a) end).()
     |> Communicator.print(state.spi)
     self() |> Modem.end_packet(state.spi)
 
