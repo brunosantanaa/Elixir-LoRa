@@ -32,7 +32,7 @@ defmodule LoRa.MixProject do
   defp description do
     """
     This is a module for transmitter data using LoRa Radios.
-  
+
     Radios:
         Semtech SX1276/77/78/79 based boards.
     """
