@@ -60,7 +60,7 @@ defmodule LoRa do
 
       LoRa.set_spreading_factor(lora_pid, 10)
   """
-  def set_spreading_factor(pid, sf \\ 6) when sf >= 6 and sf <= 12,
+  def set_spreading_factor(pid, sf \\ 7) when sf >= 6 and sf <= 12,
     do: GenServer.cast(pid, {:set_sf, sf})
 
   @doc """
