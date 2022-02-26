@@ -7,7 +7,7 @@ defmodule LoRa.Communicator do
 
   def print(text, spi) do
     current_length = read_register(spi, Parameters.register().payload_length)
-    bytelist = text |> String.to_charlist()
+    bytelist = text |> :erlang.binary_to_list()
 
     if current_length + length(bytelist) < Parameters.max().pkt_length,
       do: write(spi, bytelist, length(bytelist)),
