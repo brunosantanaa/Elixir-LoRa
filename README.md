@@ -41,7 +41,7 @@ iex> LoRa.begin(lora_pid, 433.0e6)
 :ok
 iex> LoRa.set_spreading_factor(lora_pid, 8)
 :ok
-iex> LoRa.set_bandwidth(lora_pid, 62.5e3)
+iex> LoRa.set_signal_bandwidth(lora_pid, 62.5e3)
 :ok
 ```
 
