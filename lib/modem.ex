@@ -45,7 +45,7 @@ defmodule LoRa.Modem do
       pid = spawn_link(__MODULE__, :verify_end_packet, [spi, from])
       ref = Process.monitor(pid)
 
-      Task.yield(%Task{pid: pid, ref: ref, owner: from}, 2000)
+      Task.yield(%Task{pid: pid, ref: ref, owner: from, mfa: nil}, 2000)
     end
   end
 
