@@ -76,7 +76,7 @@ defmodule LoRa.Parameters do
     6 => 62.5e3,
     7 => 125.0e3,
     8 => 250.0e3,
-    9 => 250.0e3
+    9 => 500.0e3
   }
 
   def register, do: @reg

@@ -6,6 +6,7 @@ defmodule LoRa.Modem do
 
   alias LoRa.Communicator
   alias LoRa.Parameters
+  alias LoRa.Encoding
 
   # def transmitting?(spi) do
   #   irq_flags = Communicator.read_register(spi, Parameters.register.irq_flags)
@@ -44,7 +45,7 @@ defmodule LoRa.Modem do
       pid = spawn_link(__MODULE__, :verify_end_packet, [spi, from])
       ref = Process.monitor(pid)
 
-      Task.yield(%Task{pid: pid, ref: ref, owner: from}, 2000)
+      Task.yield(%Task{pid: pid, ref: ref, owner: from, mfa: nil}, 2000)
     end
   end
 
@@ -80,18 +81,18 @@ defmodule LoRa.Modem do
     )
   end
 
-  def read(frequency, owner, spi, index \\ 0, msg \\ []) do
+  def read(frequency, owner, spi, encoding, index \\ 0, msg \\ []) do
     r_byte = Communicator.read_register(spi, Parameters.register().fifo)
     nb_bytes = Communicator.read_register(spi, Parameters.register().rx_nb_bytes) - 1
 
     if nb_bytes - index + 1 > 0,
-      do: read(frequency, owner, spi, index + 1, msg ++ [r_byte]),
+      do: read(frequency, owner, spi, encoding, index + 1, msg ++ [r_byte]),
       else:
         Kernel.send(
           owner,
           {:lora,
            %{
-             packet: List.to_string(msg),
+             packet: msg |> :erlang.list_to_binary() |> Encoding.decode_data!(encoding),
              rssi: rssi(frequency, spi),
              snr: snr(spi),
              time: DateTime.now!("Etc/UTC")
